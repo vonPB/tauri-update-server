@@ -9,7 +9,7 @@ dotenvy = "0.15"
 env_logger = "0.11"
 log = "0.4"
 serde_json = "1.0"
-octocrab = { version = "0.41", default-features = false, features = ["rustls", "hyper-rustls", "futures-util"] }
+octocrab = { version = "0.41", default-features = false, features = ["rustls", "hyper-rustls", "futures-util", "default-client"] }
 anyhow = "1.0"  # Add this line
 serde = { version = "1.0", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

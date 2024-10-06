@@ -1,37 +1,31 @@
-# Stage 1: Build Stage (Rust with musl support)
-FROM rust:1.81 as builder
+# Use a lightweight Debian image
+FROM debian:buster-slim
 
-# Install musl and necessary dependencies
-RUN apt-get update && apt-get install -y musl-tools && rustup target add x86_64-unknown-linux-musl
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory inside the container
-WORKDIR /usr/src/tauri-update-server
-
-# Copy the Cargo files
-COPY Cargo.toml Cargo.lock ./
-
-# Create a dummy main.rs to pre-build dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-
-# Build dependencies with musl
-RUN cargo build --release --target x86_64-unknown-linux-musl || true
-
-# Now copy the actual source code and build the application with musl
-COPY . .
-RUN cargo build --release --target x86_64-unknown-linux-musl
-
-# Stage 2: Use a minimal runtime (Alpine or Distroless)
-FROM scratch
+# Install Rust using rustup
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Set the working directory inside the container
 WORKDIR /app
 
-# Copy the compiled musl binary from the build stage
-COPY --from=builder /usr/src/tauri-update-server/target/x86_64-unknown-linux-musl/release/tauri-update-server .
+# Copy the entire project into the container
+COPY . .
 
-# Expose the port that the Actix Web app will run on
+# Build the Rust application in release mode
+RUN cargo build --release
+
+# Expose the port your application will run on (adjust based on your app)
 EXPOSE 8080
 
-# Command to run the application
-CMD ["./tauri-update-server"]
+# Run the compiled binary
+CMD ["./target/release/tauri-update-server"]
 
