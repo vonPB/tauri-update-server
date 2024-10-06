@@ -1,50 +1,37 @@
-# Use Debian as the base image for both build and runtime stages
-FROM debian:buster-slim as base
+# Stage 1: Build Stage (Rust with musl support)
+FROM rust:1.81 as builder
 
-# Set up necessary dependencies
-RUN apt-get update && apt-get install -y curl build-essential pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
-
-# Use the Rust image to build the project
-FROM base as builder
-
-# Install Rust using rustup
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
-ENV PATH=/root/.cargo/bin:$PATH
+# Install musl and necessary dependencies
+RUN apt-get update && apt-get install -y musl-tools && rustup target add x86_64-unknown-linux-musl
 
 # Set the working directory inside the container
-WORKDIR /app
+WORKDIR /usr/src/tauri-update-server
 
-# Copy the Cargo.toml and Cargo.lock files first to leverage Docker cache for dependencies
+# Copy the Cargo files
 COPY Cargo.toml Cargo.lock ./
 
-# Create a dummy main.rs to trigger dependency caching
+# Create a dummy main.rs to pre-build dependencies
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 
-# Build dependencies (this step is cached unless dependencies change)
-RUN cargo build --release || true
+# Build dependencies with musl
+RUN cargo build --release --target x86_64-unknown-linux-musl || true
 
-# Now copy the actual source code
+# Now copy the actual source code and build the application with musl
 COPY . .
+RUN cargo build --release --target x86_64-unknown-linux-musl
 
-# Build the application
-RUN cargo build --release
-
-# Use the same base image for the runtime to avoid GLIBC version mismatches
-FROM base
+# Stage 2: Use a minimal runtime (Alpine or Distroless)
+FROM scratch
 
 # Set the working directory inside the container
 WORKDIR /app
 
-# Copy the built application from the builder stage
-COPY --from=builder /app/target/release/tauri-update-server .
+# Copy the compiled musl binary from the build stage
+COPY --from=builder /usr/src/tauri-update-server/target/x86_64-unknown-linux-musl/release/tauri-update-server .
 
-# Set environment variables if needed (e.g., these can also be set using --env-file)
-ENV ADDRESS=0.0.0.0 \
-    PORT=8080
-
-# Expose the port the app runs on
+# Expose the port that the Actix Web app will run on
 EXPOSE 8080
 
-# Run the binary
+# Command to run the application
 CMD ["./tauri-update-server"]
 
