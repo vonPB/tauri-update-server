@@ -253,23 +253,22 @@ async fn download_from_github(
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
-
     env_logger::init();
-    info!("Starting the Tauri Update Server...");
 
-    let ip = env::var("ADDRESS").unwrap();
-    let port = env::var("PORT").unwrap();
+    let address = env::var("ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let bind_address = format!("{}:{}", address, port);
 
-    // Start HTTP server
+    println!("Main.rs: Starting the server on {}", &bind_address);
+    log::info!("Starting the Tauri Update Server on {}", &bind_address);
+
     HttpServer::new(|| {
         App::new()
-            // Serve the update check endpoint
             .service(check_update)
             .service(download_asset)
             .service(home)
     })
-    .bind(format!("{}:{}", ip, port))?
-    .workers(2)
+    .bind(&bind_address)?
     .run()
     .await
 }
