@@ -1,10 +1,23 @@
-use actix_web::{get, web, App, Error, HttpResponse, HttpServer, Responder};
+use actix_web::{get, web, App, Error, HttpResponse, HttpServer};
 use dotenvy::dotenv;
 use log::{error, info};
 use octocrab::Octocrab;
 use semver::Version;
-use serde::Serialize;
-use std::env;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, env, sync::Arc};
+use tokio::sync::RwLock;
+
+#[derive(Clone, Deserialize)]
+struct ProductConfig {
+    github_token: String,
+    repo_owner: String,
+    repo_name: String,
+}
+
+#[derive(Clone)]
+struct AppState {
+    products: Arc<RwLock<HashMap<String, ProductConfig>>>,
+}
 
 #[derive(Serialize)]
 struct UpdateResponse {
@@ -15,50 +28,105 @@ struct UpdateResponse {
     notes: String,
 }
 
-#[get("/")]
-async fn home() -> Result<HttpResponse, actix_web::error::Error> {
-    Ok(HttpResponse::Ok().body("FAS Update Server"))
+impl AppState {
+    async fn load_config() -> Self {
+        let mut products = HashMap::new();
+
+        // Load from environment variables with a pattern:
+        // PRODUCT_NAME_TOKEN, PRODUCT_NAME_OWNER, PRODUCT_NAME_REPO
+        let env_vars: HashMap<String, String> = env::vars().collect();
+
+        for (key, value) in env_vars.iter() {
+            if key.ends_with("_TOKEN") {
+                let product_name = key.trim_end_matches("_TOKEN").to_lowercase();
+
+                let owner_key = format!("{}_OWNER", product_name.to_uppercase());
+                let repo_key = format!("{}_REPO", product_name.to_uppercase());
+
+                if let (Some(owner), Some(repo)) =
+                    (env_vars.get(&owner_key), env_vars.get(&repo_key))
+                {
+                    products.insert(
+                        product_name,
+                        ProductConfig {
+                            github_token: value.clone(),
+                            repo_owner: owner.clone(),
+                            repo_name: repo.clone(),
+                        },
+                    );
+                }
+            }
+        }
+
+        AppState {
+            products: Arc::new(RwLock::new(products)),
+        }
+    }
 }
 
-#[get("/{feature}/{target}/{arch}/{current_version}")]
+#[get("/")]
+async fn home() -> Result<HttpResponse, Error> {
+    Ok(HttpResponse::Ok().body("Multi-Product Update Server"))
+}
+
+#[get("/{product_name}/{feature}/{target}/{arch}/{current_version}")]
 async fn check_update(
-    path: web::Path<(String, String, String, String)>,
+    path: web::Path<(String, String, String, String, String)>,
+    data: web::Data<AppState>,
 ) -> Result<HttpResponse, Error> {
-    let (feature, _target, _arch, current_version) = path.into_inner();
+    let (product_name, feature, _target, _arch, current_version) = path.into_inner();
 
     info!(
-        "Checking for update for feature {}, current version {}",
-        feature, current_version
+        "Checking for update for product {}, feature {}, current version {}",
+        product_name, feature, current_version
     );
 
-    // Load environment variables securely from .env
-    dotenv().ok();
+    // Get product configuration
+    let products = data.products.read().await;
+    let product_config = match products.get(&product_name.to_lowercase()) {
+        Some(config) => config.clone(),
+        None => {
+            error!("Product {} not found in configuration", product_name);
+            return Ok(HttpResponse::NotFound().finish());
+        }
+    };
 
-    // Create octocrab instance
-    let octocrab = create_octocrab_instance()?;
+    // Create octocrab instance for this product
+    let octocrab = create_octocrab_instance(&product_config.github_token)?;
 
     // Fetch the latest release
-    let repo_owner = env::var("GITHUB_REPO_OWNER").unwrap();
-    let repo_name = env::var("GITHUB_REPO_NAME").unwrap();
-    let release = fetch_latest_release(&octocrab, &repo_owner, &repo_name)
-        .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let release = fetch_latest_release(
+        &octocrab,
+        &product_config.repo_owner,
+        &product_config.repo_name,
+    )
+    .await
+    .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
 
     // Extract the latest version and compare with current version
     let latest_version = Version::parse(release.tag_name.trim_start_matches('v')).unwrap();
     let current_version = Version::parse(&current_version).unwrap();
 
     if latest_version > current_version {
-        let signature = download_asset_content(&repo_owner, &repo_name, &release, &feature, ".sig")
-            .await
-            .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        let signature = download_asset_content(
+            &product_config.repo_owner,
+            &product_config.repo_name,
+            &release,
+            &feature,
+            ".sig",
+            &product_config.github_token,
+        )
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+
         let installer_filename = find_asset_filename(&release, &feature, ".msi")?;
 
-        let hostname = env::var("HOSTNAME").unwrap_or("localhost".to_string());
+        let hostname = env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string());
 
         let url = format!(
-            "{}/download/{}/{}",
+            "{}/{}/download/{}/{}",
             hostname,
+            product_name,
             find_asset_id_by_filename(&release, &installer_filename)?,
             installer_filename
         );
@@ -68,7 +136,7 @@ async fn check_update(
             pub_date: release.published_at.unwrap().to_rfc3339(),
             url,
             signature,
-            notes: String::from(""), // Notes are empty for now
+            notes: release.body.unwrap_or_default(),
         };
 
         Ok(HttpResponse::Ok().json(update_response))
@@ -77,30 +145,34 @@ async fn check_update(
     }
 }
 
-#[get("/download/{asset_id}/{filename}")]
+#[get("/{product_name}/download/{asset_id}/{filename}")]
 async fn download_asset(
-    path: web::Path<(u64, String)>,
-) -> Result<HttpResponse, actix_web::error::Error> {
-    let (asset_id, filename) = path.into_inner();
+    path: web::Path<(String, u64, String)>,
+    data: web::Data<AppState>,
+) -> Result<HttpResponse, Error> {
+    let (product_name, asset_id, filename) = path.into_inner();
 
     info!(
-        "Downloading asset with id {} and filename {}",
-        asset_id, filename
+        "Downloading asset for product {}, id {} and filename {}",
+        product_name, asset_id, filename
     );
+
+    let products = data.products.read().await;
+    let product_config = match products.get(&product_name.to_lowercase()) {
+        Some(config) => config.clone(),
+        None => {
+            error!("Product {} not found in configuration", product_name);
+            return Ok(HttpResponse::NotFound().finish());
+        }
+    };
 
     let client = reqwest::Client::new();
-
-    // Load environment variables securely from .env
-    dotenv().ok();
-
-    let repo_owner = env::var("GITHUB_REPO_OWNER").unwrap();
-    let repo_name = env::var("GITHUB_REPO_NAME").unwrap();
     let download_url = format!(
         "https://api.github.com/repos/{}/{}/releases/assets/{}",
-        repo_owner, repo_name, asset_id
+        product_config.repo_owner, product_config.repo_name, asset_id
     );
 
-    match download_from_github(&client, &download_url).await {
+    match download_from_github(&client, &download_url, &product_config.github_token).await {
         Ok(bytes) => Ok(HttpResponse::Ok()
             .append_header((
                 "Content-Disposition",
@@ -116,9 +188,10 @@ async fn download_asset(
     }
 }
 
-fn create_octocrab_instance() -> Result<Octocrab, actix_web::Error> {
+// Helper functions modified to accept GitHub token as parameter
+fn create_octocrab_instance(github_token: &str) -> Result<Octocrab, actix_web::Error> {
     Octocrab::builder()
-        .personal_token(env::var("GITHUB_TOKEN").unwrap())
+        .personal_token(github_token.to_string())
         .build()
         .map_err(|e| {
             error!("Failed to build Octocrab instance: {}", e);
@@ -130,7 +203,7 @@ async fn fetch_latest_release(
     octocrab: &Octocrab,
     repo_owner: &str,
     repo_name: &str,
-) -> Result<octocrab::models::repos::Release, actix_web::error::Error> {
+) -> Result<octocrab::models::repos::Release, actix_web::Error> {
     octocrab
         .repos(repo_owner, repo_name)
         .releases()
@@ -148,7 +221,8 @@ async fn download_asset_content(
     release: &octocrab::models::repos::Release,
     feature: &str,
     extension: &str,
-) -> Result<String, actix_web::error::Error> {
+    github_token: &str,
+) -> Result<String, actix_web::Error> {
     let asset_id = find_asset_id(release, feature, extension)?;
     let client = reqwest::Client::new();
     let download_url = format!(
@@ -156,7 +230,7 @@ async fn download_asset_content(
         repo_owner, repo_name, asset_id
     );
 
-    download_from_github(&client, &download_url)
+    download_from_github(&client, &download_url, github_token)
         .await
         .map(|bytes| {
             String::from_utf8(bytes.to_vec())
@@ -165,11 +239,12 @@ async fn download_asset_content(
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))
 }
 
+// Reuse existing helper functions
 fn find_asset_id(
     release: &octocrab::models::repos::Release,
     feature: &str,
     extension: &str,
-) -> Result<u64, actix_web::error::Error> {
+) -> Result<u64, actix_web::Error> {
     release
         .assets
         .iter()
@@ -191,7 +266,7 @@ fn find_asset_filename(
     release: &octocrab::models::repos::Release,
     feature: &str,
     extension: &str,
-) -> Result<String, actix_web::error::Error> {
+) -> Result<String, actix_web::Error> {
     release
         .assets
         .iter()
@@ -212,7 +287,7 @@ fn find_asset_filename(
 fn find_asset_id_by_filename(
     release: &octocrab::models::repos::Release,
     filename: &str,
-) -> Result<u64, actix_web::error::Error> {
+) -> Result<u64, actix_web::Error> {
     release
         .assets
         .iter()
@@ -227,15 +302,13 @@ fn find_asset_id_by_filename(
 async fn download_from_github(
     client: &reqwest::Client,
     url: &str,
-) -> Result<bytes::Bytes, actix_web::error::Error> {
+    github_token: &str,
+) -> Result<bytes::Bytes, actix_web::Error> {
     client
         .get(url)
-        .header(
-            "Authorization",
-            format!("Bearer {}", env::var("GITHUB_TOKEN").unwrap()),
-        )
+        .header("Authorization", format!("Bearer {}", github_token))
         .header("Accept", "application/octet-stream")
-        .header("User-Agent", "Tauri-Update-Server")
+        .header("User-Agent", "Multi-Product-Update-Server")
         .send()
         .await
         .map_err(|e| {
@@ -259,11 +332,20 @@ async fn main() -> std::io::Result<()> {
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let bind_address = format!("{}:{}", address, port);
 
-    println!("Main.rs: Starting the server on {}", &bind_address);
-    log::info!("Starting the Tauri Update Server on {}", &bind_address);
+    let app_state = AppState::load_config().await;
 
-    HttpServer::new(|| {
+    println!(
+        "Starting the multi-product update server on {}",
+        &bind_address
+    );
+    log::info!(
+        "Starting the multi-product update server on {}",
+        &bind_address
+    );
+
+    HttpServer::new(move || {
         App::new()
+            .app_data(web::Data::new(app_state.clone()))
             .service(check_update)
             .service(download_asset)
             .service(home)
