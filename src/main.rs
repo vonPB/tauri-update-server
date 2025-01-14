@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, sync::Arc};
 use tokio::sync::RwLock;
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct ProductConfig {
     github_token: String,
     repo_owner: String,
@@ -83,6 +83,7 @@ async fn check_update(
 
     // Get product configuration
     let products = data.products.read().await;
+
     let product_config = match products.get(&product_name.to_lowercase()) {
         Some(config) => config.clone(),
         None => {
@@ -104,7 +105,10 @@ async fn check_update(
     .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
 
     // Extract the latest version and compare with current version
-    let latest_version = Version::parse(release.tag_name.trim_start_matches('v')).unwrap();
+    let latest_version = Version::parse(release.tag_name.trim_start_matches('v')).map_err(|e| {
+        error!("Failed to parse latest version: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to parse latest version")
+    })?;
     let current_version = Version::parse(&current_version).unwrap();
 
     if latest_version > current_version {
@@ -239,17 +243,27 @@ async fn download_asset_content(
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))
 }
 
-// Reuse existing helper functions
 fn find_asset_id(
     release: &octocrab::models::repos::Release,
     feature: &str,
     extension: &str,
 ) -> Result<u64, actix_web::Error> {
+    println!("feature: {}", feature);
+    println!("extension: {}", extension);
+    println!("release: {:?}", release.assets);
+
+    let feature = if feature == "stable" {
+        "".to_string()
+    } else {
+        feature.to_string()
+    };
+
     release
         .assets
         .iter()
         .find(|asset| {
-            asset.name.to_lowercase().contains(&feature.to_lowercase())
+            // If feature is provided, match it in the asset name; otherwise, ignore it
+            (feature.is_empty() || asset.name.to_lowercase().contains(&feature.to_lowercase()))
                 && asset.name.ends_with(extension)
         })
         .map(|asset| asset.id.0)
@@ -267,11 +281,17 @@ fn find_asset_filename(
     feature: &str,
     extension: &str,
 ) -> Result<String, actix_web::Error> {
+    let feature = if feature == "stable" {
+        "".to_string()
+    } else {
+        feature.to_string()
+    };
+
     release
         .assets
         .iter()
         .find(|asset| {
-            asset.name.to_lowercase().contains(&feature.to_lowercase())
+            (feature.is_empty() || asset.name.to_lowercase().contains(&feature.to_lowercase()))
                 && asset.name.ends_with(extension)
         })
         .map(|asset| asset.name.clone())
