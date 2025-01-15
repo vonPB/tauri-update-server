@@ -2109,6 +2109,7 @@ dependencies = [
  "bytes",
  "dotenvy",
  "env_logger",
+ "lazy_static",
  "log",
  "octocrab",
  "reqwest",

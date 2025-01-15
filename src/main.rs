@@ -1,11 +1,55 @@
 use actix_web::{get, web, App, Error, HttpResponse, HttpServer};
 use dotenvy::dotenv;
+use lazy_static::lazy_static;
 use log::{error, info};
 use octocrab::Octocrab;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, sync::Arc};
 use tokio::sync::RwLock;
+
+// Platform-specific extension mappings
+lazy_static! {
+    static ref PLATFORM_EXTENSIONS: Vec<PlatformExtension> = vec![
+        PlatformExtension {
+            target: "windows",
+            arch: "x86_64",
+            extension: "x64_en-US.msi",
+            sig_extension: "x64_en-US.msi.sig",
+        },
+        PlatformExtension {
+            target: "windows",
+            arch: "i686",
+            extension: "x86_en-US.msi",
+            sig_extension: "x86_en-US.msi.sig",
+        },
+        PlatformExtension {
+            target: "darwin",
+            arch: "x86_64",
+            extension: "x64.app.tar.gz",
+            sig_extension: "x64.app.tar.gz.sig",
+        },
+        PlatformExtension {
+            target: "darwin",
+            arch: "aarch64",
+            extension: "aarch64.app.tar.gz",
+            sig_extension: "aarch64.app.tar.gz.sig",
+        },
+        PlatformExtension {
+            target: "linux",
+            arch: "x86_64",
+            extension: "amd64.AppImage",
+            sig_extension: "amd64.AppImage.sig",
+        },
+    ];
+}
+
+struct PlatformExtension {
+    target: &'static str,
+    arch: &'static str,
+    extension: &'static str,
+    sig_extension: &'static str,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 struct ProductConfig {
@@ -74,16 +118,15 @@ async fn check_update(
     path: web::Path<(String, String, String, String, String)>,
     data: web::Data<AppState>,
 ) -> Result<HttpResponse, Error> {
-    let (product_name, feature, _target, _arch, current_version) = path.into_inner();
+    let (product_name, feature, target, arch, current_version) = path.into_inner();
 
     info!(
-        "Checking for update for product {}, feature {}, current version {}",
-        product_name, feature, current_version
+        "Checking for update for product {}, feature {}, target {}, arch {}, current version {}",
+        product_name, feature, target, arch, current_version
     );
 
     // Get product configuration
     let products = data.products.read().await;
-
     let product_config = match products.get(&product_name.to_lowercase()) {
         Some(config) => config.clone(),
         None => {
@@ -92,7 +135,7 @@ async fn check_update(
         }
     };
 
-    // Create octocrab instance for this product
+    // Create octocrab instance
     let octocrab = create_octocrab_instance(&product_config.github_token)?;
 
     // Fetch the latest release
@@ -102,9 +145,9 @@ async fn check_update(
         &product_config.repo_name,
     )
     .await
-    .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    .map_err(actix_web::error::ErrorInternalServerError)?;
 
-    // Extract the latest version and compare with current version
+    // Parse versions and compare
     let latest_version = Version::parse(release.tag_name.trim_start_matches('v')).map_err(|e| {
         error!("Failed to parse latest version: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to parse latest version")
@@ -112,18 +155,32 @@ async fn check_update(
     let current_version = Version::parse(&current_version).unwrap();
 
     if latest_version > current_version {
+        // Find the correct platform extension mapping
+        let platform_ext = PLATFORM_EXTENSIONS
+            .iter()
+            .find(|p| p.target == target && p.arch == arch)
+            .ok_or_else(|| {
+                error!(
+                    "No platform mapping found for target {} and arch {}",
+                    target, arch
+                );
+                actix_web::error::ErrorInternalServerError("Unsupported platform/architecture")
+            })?;
+
+        // Find the installer and signature files
         let signature = download_asset_content(
             &product_config.repo_owner,
             &product_config.repo_name,
             &release,
             &feature,
-            ".sig",
+            platform_ext.sig_extension,
             &product_config.github_token,
         )
         .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
 
-        let installer_filename = find_asset_filename(&release, &feature, ".msi")?;
+        let installer_filename =
+            find_asset_filename(&release, &feature, platform_ext.extension, &target, &arch)?;
 
         let hostname = env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_string());
 
@@ -192,7 +249,6 @@ async fn download_asset(
     }
 }
 
-// Helper functions modified to accept GitHub token as parameter
 fn create_octocrab_instance(github_token: &str) -> Result<Octocrab, actix_web::Error> {
     Octocrab::builder()
         .personal_token(github_token.to_string())
@@ -219,6 +275,67 @@ async fn fetch_latest_release(
         })
 }
 
+fn find_asset_filename(
+    release: &octocrab::models::repos::Release,
+    feature: &str,
+    extension: &str,
+    target: &str,
+    arch: &str,
+) -> Result<String, actix_web::Error> {
+    let feature = if feature == "stable" {
+        "".to_string()
+    } else {
+        feature.to_string()
+    };
+
+    release
+        .assets
+        .iter()
+        .find(|asset| {
+            let name_lower = asset.name.to_lowercase();
+            let matches_feature =
+                feature.is_empty() || name_lower.contains(&feature.to_lowercase());
+            let matches_extension = asset.name.ends_with(extension);
+
+            // Additional platform-specific checks
+            let matches_platform = match target {
+                "windows" => name_lower.contains("x64") || name_lower.contains("x86"),
+                "darwin" => name_lower.contains("dmg") || name_lower.contains("app.tar.gz"),
+                "linux" => {
+                    name_lower.contains("appimage")
+                        || name_lower.contains("deb")
+                        || name_lower.contains("rpm")
+                }
+                _ => false,
+            };
+
+            matches_feature && matches_extension && matches_platform
+        })
+        .map(|asset| asset.name.clone())
+        .ok_or_else(|| {
+            error!(
+                "Asset file not found for feature: {}, target: {}, arch: {}, extension: {}",
+                feature, target, arch, extension
+            );
+            actix_web::error::ErrorInternalServerError("Asset file not found")
+        })
+}
+
+fn find_asset_id_by_filename(
+    release: &octocrab::models::repos::Release,
+    filename: &str,
+) -> Result<u64, actix_web::Error> {
+    release
+        .assets
+        .iter()
+        .find(|asset| asset.name == filename)
+        .map(|asset| asset.id.0)
+        .ok_or_else(|| {
+            error!("Asset file not found for filename: {}", filename);
+            actix_web::error::ErrorInternalServerError("Asset file not found")
+        })
+}
+
 async fn download_asset_content(
     repo_owner: &str,
     repo_name: &str,
@@ -240,7 +357,7 @@ async fn download_asset_content(
             String::from_utf8(bytes.to_vec())
                 .unwrap_or_else(|_| "Failed to convert bytes to string".to_string())
         })
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))
+        .map_err(actix_web::error::ErrorInternalServerError)
 }
 
 fn find_asset_id(
@@ -248,10 +365,6 @@ fn find_asset_id(
     feature: &str,
     extension: &str,
 ) -> Result<u64, actix_web::Error> {
-    println!("feature: {}", feature);
-    println!("extension: {}", extension);
-    println!("release: {:?}", release.assets);
-
     let feature = if feature == "stable" {
         "".to_string()
     } else {
@@ -262,8 +375,8 @@ fn find_asset_id(
         .assets
         .iter()
         .find(|asset| {
-            // If feature is provided, match it in the asset name; otherwise, ignore it
-            (feature.is_empty() || asset.name.to_lowercase().contains(&feature.to_lowercase()))
+            let name_lower = asset.name.to_lowercase();
+            (feature.is_empty() || name_lower.contains(&feature.to_lowercase()))
                 && asset.name.ends_with(extension)
         })
         .map(|asset| asset.id.0)
@@ -272,49 +385,6 @@ fn find_asset_id(
                 "Asset file not found for feature: {} and extension: {}",
                 feature, extension
             );
-            actix_web::error::ErrorInternalServerError("Asset file not found")
-        })
-}
-
-fn find_asset_filename(
-    release: &octocrab::models::repos::Release,
-    feature: &str,
-    extension: &str,
-) -> Result<String, actix_web::Error> {
-    let feature = if feature == "stable" {
-        "".to_string()
-    } else {
-        feature.to_string()
-    };
-
-    release
-        .assets
-        .iter()
-        .find(|asset| {
-            (feature.is_empty() || asset.name.to_lowercase().contains(&feature.to_lowercase()))
-                && asset.name.ends_with(extension)
-        })
-        .map(|asset| asset.name.clone())
-        .ok_or_else(|| {
-            error!(
-                "Asset file not found for feature: {} and extension: {}",
-                feature, extension
-            );
-            actix_web::error::ErrorInternalServerError("Asset file not found")
-        })
-}
-
-fn find_asset_id_by_filename(
-    release: &octocrab::models::repos::Release,
-    filename: &str,
-) -> Result<u64, actix_web::Error> {
-    release
-        .assets
-        .iter()
-        .find(|asset| asset.name == filename)
-        .map(|asset| asset.id.0)
-        .ok_or_else(|| {
-            error!("Asset file not found for filename: {}", filename);
             actix_web::error::ErrorInternalServerError("Asset file not found")
         })
 }
