@@ -2,7 +2,7 @@ use std::fmt;
 
 use actix_web::http::StatusCode;
 use actix_web::ResponseError;
-use log::{error, info};
+use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,9 +143,9 @@ impl PlatformMatcher {
         });
 
         // Debug log all assets
-        info!("Available assets: {:?}", assets);
+        debug!("Available assets: {:?}", assets);
         if let Some(prefix) = &feature_prefix {
-            info!("Looking for feature prefix: {}", prefix);
+            debug!("Looking for feature prefix: {}", prefix);
         }
 
         // Find matching installer

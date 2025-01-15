@@ -1,5 +1,5 @@
 use actix_web::{get, web, Error, HttpResponse};
-use log::{error, info};
+use log::{debug, error};
 use semver::Version;
 use serde::Serialize;
 
@@ -23,7 +23,7 @@ pub async fn check_update(
 ) -> Result<HttpResponse, Error> {
     let (product_name, feature, target, arch, current_version) = path.into_inner();
 
-    info!(
+    debug!(
         "Checking for update for product {}, feature {}, target {}, arch {}, current version {}",
         product_name, feature, target, arch, current_version
     );
@@ -103,11 +103,11 @@ pub async fn check_update(
             ));
         };
 
-        info!(
+        debug!(
             "Found signature file: {}",
             asset_match.signature_filename.unwrap_or_default()
         );
-        info!("Signature length: {}", signature.len());
+        debug!("Signature length: {}", signature.len());
 
         let update_response = UpdateResponse {
             version: latest_version.to_string(),
