@@ -142,7 +142,6 @@ impl PlatformMatcher {
             }
         });
 
-        // Debug log all assets
         debug!("Available assets: {:?}", assets);
         if let Some(prefix) = &feature_prefix {
             debug!("Looking for feature prefix: {}", prefix);
@@ -215,14 +214,14 @@ fn test_stable_feature_matching() {
     };
 
     let assets = vec![
-        "KWALIS.-.Naturland_1.2.0_x64_en-US.msi".to_string(),
-        "KWALIS.-.Naturland_1.2.0_x64_en-US.msi.sig".to_string(),
+        "COMPANY.-.Product_1.2.0_x64_en-US.msi".to_string(),
+        "COMPANY.-.Product_1.2.0_x64_en-US.msi.sig".to_string(),
     ];
 
     let result = matcher
         .find_matching_asset(&platform, &assets, Some("stable"))
         .unwrap();
-    assert_eq!(result.filename, "KWALIS.-.Naturland_1.2.0_x64_en-US.msi");
+    assert_eq!(result.filename, "COMPANY.-.Product_1.2.0_x64_en-US.msi");
 }
 
 #[test]
@@ -234,9 +233,9 @@ fn test_macos_matching() {
     };
 
     let assets = vec![
-        "KWALIS.-.Naturland_1.2.0_aarch64.app.tar.gz".to_string(),
-        "KWALIS.-.Naturland_1.2.0_aarch64.app.tar.gz.sig".to_string(),
-        "KWALIS.-.Naturland_1.2.0_x64.app.tar.gz".to_string(),
+        "COMPANY.-.Product_1.2.0_aarch64.app.tar.gz".to_string(),
+        "COMPANY.-.Product_1.2.0_aarch64.app.tar.gz.sig".to_string(),
+        "COMPANY.-.Product_1.2.0_x64.app.tar.gz".to_string(),
     ];
 
     let result = matcher
@@ -244,7 +243,7 @@ fn test_macos_matching() {
         .unwrap();
     assert_eq!(
         result.filename,
-        "KWALIS.-.Naturland_1.2.0_aarch64.app.tar.gz"
+        "COMPANY.-.Product_1.2.0_aarch64.app.tar.gz"
     );
 }
 
@@ -257,14 +256,14 @@ fn test_linux_matching() {
     };
 
     let assets = vec![
-        "KWALIS.-.Naturland_1.2.0_amd64.AppImage".to_string(),
-        "KWALIS.-.Naturland_1.2.0_amd64.AppImage.sig".to_string(),
+        "COMPANY.-.Product_1.2.0_amd64.AppImage".to_string(),
+        "COMPANY.-.Product_1.2.0_amd64.AppImage.sig".to_string(),
     ];
 
     let result = matcher
         .find_matching_asset(&platform, &assets, None)
         .unwrap();
-    assert_eq!(result.filename, "KWALIS.-.Naturland_1.2.0_amd64.AppImage");
+    assert_eq!(result.filename, "COMPANY.-.Product_1.2.0_amd64.AppImage");
 }
 
 #[test]
@@ -275,7 +274,7 @@ fn test_no_matching_asset() {
         arch: "x86_64".to_string(),
     };
 
-    let assets = vec!["KWALIS.-.Naturland_1.2.0_aarch64.app.tar.gz".to_string()];
+    let assets = vec!["COMPANY.-.Product_1.2.0_aarch64.app.tar.gz".to_string()];
 
     assert!(matcher
         .find_matching_asset(&platform, &assets, None)
