@@ -1,5 +1,5 @@
 # Use a lightweight Debian image
-FROM debian:buster-slim
+FROM debian:bookworm-slim
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
