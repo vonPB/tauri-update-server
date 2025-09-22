@@ -102,6 +102,11 @@ When the `updater` plugin is active in your `tauri.conf.json`, Tauri's GitHub Ac
 - **Feature Channels**: To support channels like `beta`, prefix the asset filename (e.g., `BETA.my-app_1.2.0_x64.msi`). The stable channel uses files without a prefix.
 
 ### 2. Tauri Configuration
+## 📦 Usage
+
+Refer to the [Updater plugin docs](https://v2.tauri.app/plugin/updater/) and the [official Tauri GitHub pipelines documentation](https://v2.tauri.app/distribute/pipelines/github) for full details.
+
+- **Feature Channels**: Supported (e.g. prefix filenames with `BETA.` for beta releases). The stable channel uses files without a prefix.
 
 In your `tauri.conf.json`, set the updater endpoints to your server:
 ```json
