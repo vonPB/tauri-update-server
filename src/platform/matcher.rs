@@ -52,7 +52,6 @@ pub struct PlatformMatcher {
 
 pub trait MatchRule: Send + Sync {
     fn matches(&self, platform: &Platform, filename: &str) -> bool;
-    fn get_signature_extension(&self) -> &str;
 }
 
 // Windows MSI Rule
@@ -71,9 +70,6 @@ impl MatchRule for WindowsMsiRule {
         }
     }
 
-    fn get_signature_extension(&self) -> &str {
-        ".msi.sig"
-    }
 }
 
 // macOS Rule
@@ -94,9 +90,6 @@ impl MatchRule for MacOSRule {
         arch_match && (filename_lower.ends_with(".app.tar.gz") || filename_lower.ends_with(".dmg"))
     }
 
-    fn get_signature_extension(&self) -> &str {
-        ".sig"
-    }
 }
 
 // Linux Rule
@@ -113,9 +106,6 @@ impl MatchRule for LinuxRule {
             && filename_lower.ends_with(".appimage")
     }
 
-    fn get_signature_extension(&self) -> &str {
-        ".sig"
-    }
 }
 
 impl PlatformMatcher {
@@ -147,35 +137,42 @@ impl PlatformMatcher {
             debug!("Looking for feature prefix: {}", prefix);
         }
 
-        // Find matching installer
-        let matching_asset = assets
-            .iter()
-            .find(|asset| {
-                let passes_feature = match &feature_prefix {
-                    Some(prefix) if !prefix.is_empty() => asset.starts_with(prefix),
-                    _ => true,
-                };
+        let mut signatureless_match: Option<String> = None;
 
-                passes_feature && self.rules.iter().any(|rule| rule.matches(platform, asset))
-            })
-            .ok_or_else(|| MatchError::NoMatch {
-                target: platform.target.clone(),
-                arch: platform.arch.clone(),
-            })?;
+        for asset in assets.iter() {
+            let passes_feature = match &feature_prefix {
+                Some(prefix) if !prefix.is_empty() => asset.starts_with(prefix),
+                _ => true,
+            };
 
-        // Look for exact signature match
-        let signature_filename = format!("{}.sig", matching_asset);
-        let signature = if assets.contains(&signature_filename) {
-            Some(signature_filename)
-        } else {
-            error!("No signature file found for {}", matching_asset);
+            if !passes_feature {
+                continue;
+            }
+
+            if !self.rules.iter().any(|rule| rule.matches(platform, asset)) {
+                continue;
+            }
+
+            let signature_filename = format!("{}.sig", asset);
+            if assets.contains(&signature_filename) {
+                return Ok(AssetMatch {
+                    filename: asset.clone(),
+                    signature_filename: Some(signature_filename),
+                });
+            }
+
+            error!("No signature file found for {}", asset);
             info!("Expected signature file: {}", signature_filename);
-            None
-        };
+            signatureless_match = Some(asset.clone());
+        }
 
-        Ok(AssetMatch {
-            filename: matching_asset.clone(),
-            signature_filename: signature,
+        if let Some(asset) = signatureless_match {
+            return Err(MatchError::NoSignature(asset));
+        }
+
+        Err(MatchError::NoMatch {
+            target: platform.target.clone(),
+            arch: platform.arch.clone(),
         })
     }
 }
