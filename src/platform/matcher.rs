@@ -2,7 +2,7 @@ use std::fmt;
 
 use actix_web::http::StatusCode;
 use actix_web::ResponseError;
-use log::{debug, error, info};
+use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,9 +132,9 @@ impl PlatformMatcher {
             }
         });
 
-        debug!("Available assets: {:?}", assets);
+        trace!("Available assets: {:?}", assets);
         if let Some(prefix) = &feature_prefix {
-            debug!("Looking for feature prefix: {}", prefix);
+            trace!("Looking for feature prefix: {}", prefix);
         }
 
         let mut signatureless_match: Option<String> = None;

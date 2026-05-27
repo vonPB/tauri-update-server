@@ -39,11 +39,14 @@ ADDRESS=0.0.0.0
 PORT=8080
 HOSTNAME=https://updates.example.com
 DOWNLOAD_TOKEN_SECRET=replace-with-a-long-random-secret
+GITHUB_RELEASE_CACHE_TTL_SECONDS=60
 ```
 
 The `_TOKEN` variable (e.g., `MYAPP_TOKEN`) must be a [GitHub Personal Access Token (PAT)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens) with `read-only` permission for the **Contents** of your private repository to access its release assets.
 
 `DOWNLOAD_TOKEN_SECRET` signs short-lived download URLs. Use the same strong random value on every instance of the server.
+
+`GITHUB_RELEASE_CACHE_TTL_SECONDS` controls how long each server instance reuses the latest GitHub release response per product. The default is `60`; set it to `0` to disable caching.
 
 On startup a map of the product configs is read from the .env. Add as many products as you wish.
 

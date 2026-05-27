@@ -1,6 +1,6 @@
 use actix_web::Error;
 use bytes::Bytes;
-use log::{debug, error};
+use log::{error, trace};
 use octocrab::Octocrab;
 use reqwest;
 
@@ -67,7 +67,7 @@ impl GitHubClient {
             owner, repo, asset_id
         );
 
-        debug!("Downloading asset from GitHub API URL: {}", url);
+        trace!("Downloading asset from GitHub API URL: {}", url);
 
         let response = client
             .get(url)

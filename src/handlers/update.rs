@@ -1,9 +1,12 @@
 use actix_web::{get, web, Error, HttpResponse};
-use log::{debug, error};
+use log::{debug, error, trace};
 use semver::Version;
 use serde::Serialize;
 
-use crate::config::AppState;
+use std::sync::Arc;
+use std::time::Instant;
+
+use crate::config::{AppState, CachedValue, ProductConfig};
 use crate::download_token::create_download_token;
 use crate::github::client::GitHubClient;
 use crate::platform::matcher::{Platform, PlatformMatcher};
@@ -60,6 +63,108 @@ fn require_pub_date(pub_date: Option<String>) -> Result<String, Error> {
     })
 }
 
+async fn get_cached_value<K, V>(
+    cache: &tokio::sync::RwLock<std::collections::HashMap<K, CachedValue<V>>>,
+    key: &K,
+    cache_ttl: std::time::Duration,
+) -> Option<Arc<V>>
+where
+    K: Eq + std::hash::Hash,
+{
+    if cache_ttl.is_zero() {
+        return None;
+    }
+
+    cache.read().await.get(key).and_then(|cached| {
+        if cached.fetched_at.elapsed() < cache_ttl {
+            Some(cached.value.clone())
+        } else {
+            None
+        }
+    })
+}
+
+async fn set_cached_value<K, V>(
+    cache: &tokio::sync::RwLock<std::collections::HashMap<K, CachedValue<V>>>,
+    key: K,
+    value: Arc<V>,
+    cache_ttl: std::time::Duration,
+) where
+    K: Eq + std::hash::Hash,
+{
+    if cache_ttl.is_zero() {
+        return;
+    }
+
+    cache.write().await.insert(
+        key,
+        CachedValue {
+            value,
+            fetched_at: Instant::now(),
+        },
+    );
+}
+
+async fn get_latest_release(
+    data: &web::Data<AppState>,
+    github: &GitHubClient,
+    product_name: &str,
+    product_config: &ProductConfig,
+) -> Result<Arc<octocrab::models::repos::Release>, Error> {
+    let cache_key = product_name.to_lowercase();
+    let cache_ttl = data.github_release_cache_ttl;
+
+    if let Some(release) = get_cached_value(&data.release_cache, &cache_key, cache_ttl).await {
+        debug!("Using cached GitHub release for product {}", product_name);
+        return Ok(release);
+    }
+
+    let release = Arc::new(
+        github
+            .get_latest_release(&product_config.repo_owner, &product_config.repo_name)
+            .await?,
+    );
+
+    set_cached_value(&data.release_cache, cache_key, release.clone(), cache_ttl).await;
+
+    Ok(release)
+}
+
+async fn get_signature(
+    data: &web::Data<AppState>,
+    github: &GitHubClient,
+    signature_asset_id: u64,
+    product_config: &ProductConfig,
+) -> Result<Arc<String>, Error> {
+    let cache_ttl = data.github_release_cache_ttl;
+
+    if let Some(signature) =
+        get_cached_value(&data.signature_cache, &signature_asset_id, cache_ttl).await
+    {
+        debug!("Using cached signature for asset {}", signature_asset_id);
+        return Ok(signature);
+    }
+
+    let sig_bytes = github
+        .download_asset(
+            signature_asset_id,
+            &product_config.repo_owner,
+            &product_config.repo_name,
+        )
+        .await?;
+    let signature = Arc::new(read_signature(sig_bytes)?);
+
+    set_cached_value(
+        &data.signature_cache,
+        signature_asset_id,
+        signature.clone(),
+        cache_ttl,
+    )
+    .await;
+
+    Ok(signature)
+}
+
 #[get("/{product_name}/{feature}/{target}/{arch}/{current_version}")]
 pub async fn check_update(
     path: web::Path<(String, String, String, String, String)>,
@@ -88,9 +193,7 @@ pub async fn check_update(
     let github = GitHubClient::new(product_config.github_token.clone())?;
 
     // Fetch latest release
-    let release = github
-        .get_latest_release(&product_config.repo_owner, &product_config.repo_name)
-        .await?;
+    let release = get_latest_release(&data, &github, &product_name, &product_config).await?;
 
     // Parse versions and compare
     let latest_version = Version::parse(release.tag_name.trim_start_matches('v')).map_err(|e| {
@@ -144,33 +247,30 @@ pub async fn check_update(
                 .find(|a| a.name == sig_filename)
                 .ok_or_else(|| actix_web::error::ErrorInternalServerError("Signature not found"))?;
 
-            let sig_bytes = github
-                .download_asset(
-                    sig_asset.id.0,
-                    &product_config.repo_owner,
-                    &product_config.repo_name,
-                )
-                .await?;
-
-            read_signature(sig_bytes)?
+            get_signature(&data, &github, sig_asset.id.0, &product_config)
+                .await?
+                .as_ref()
+                .clone()
         } else {
             return Err(actix_web::error::ErrorInternalServerError(
                 "No signature file found",
             ));
         };
 
-        debug!(
+        trace!(
             "Found signature file: {}",
             asset_match.signature_filename.unwrap_or_default()
         );
-        debug!("Signature length: {}", signature.len());
+        trace!("Signature length: {}", signature.len());
 
         let update_response = UpdateResponse {
             version: latest_version.to_string(),
-            pub_date: require_pub_date(release.published_at.map(|date| date.to_rfc3339()))?,
+            pub_date: require_pub_date(
+                release.published_at.as_ref().map(|date| date.to_rfc3339()),
+            )?,
             url,
             signature,
-            notes: release.body.unwrap_or_default(),
+            notes: release.body.clone().unwrap_or_default(),
         };
 
         Ok(HttpResponse::Ok().json(update_response))
