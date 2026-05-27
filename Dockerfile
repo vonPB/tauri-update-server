@@ -1,31 +1,24 @@
-# Use a lightweight Debian image
-FROM debian:bookworm-slim
+FROM rust:1-bookworm AS builder
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    build-essential \
-    pkg-config \
-    libssl-dev \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Rust using rustup
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy the entire project into the container
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
 
-# Build the Rust application in release mode
 RUN cargo build --release
 
-# Expose the port your application will run on (adjust based on your app)
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --shell /usr/sbin/nologin appuser
+
+COPY --from=builder /app/target/release/tauri-update-server /usr/local/bin/tauri-update-server
+
+USER appuser
+
 EXPOSE 8080
 
-# Run the compiled binary
-CMD ["./target/release/tauri-update-server"]
-
+CMD ["tauri-update-server"]

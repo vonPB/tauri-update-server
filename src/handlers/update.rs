@@ -16,6 +16,23 @@ pub struct UpdateResponse {
     notes: String,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_current_version() {
+        assert!(parse_current_version("not-a-version").is_err());
+    }
+}
+
+fn parse_current_version(current_version: &str) -> Result<Version, Error> {
+    Version::parse(current_version).map_err(|e| {
+        error!("Failed to parse current version: {}", e);
+        actix_web::error::ErrorBadRequest("Invalid current version format")
+    })
+}
+
 #[get("/{product_name}/{feature}/{target}/{arch}/{current_version}")]
 pub async fn check_update(
     path: web::Path<(String, String, String, String, String)>,
@@ -27,6 +44,8 @@ pub async fn check_update(
         "Checking for update for product {}, feature {}, target {}, arch {}, current version {}",
         product_name, feature, target, arch, current_version
     );
+
+    let current_version = parse_current_version(&current_version)?;
 
     // Get product configuration
     let products = data.products.read().await;
@@ -51,7 +70,6 @@ pub async fn check_update(
         error!("Failed to parse latest version: {}", e);
         actix_web::error::ErrorInternalServerError("Invalid version format")
     })?;
-    let current_version = Version::parse(&current_version).unwrap();
 
     if latest_version > current_version {
         let platform = Platform { target, arch };
