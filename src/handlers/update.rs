@@ -27,12 +27,36 @@ mod tests {
     fn rejects_invalid_current_version() {
         assert!(parse_current_version("not-a-version").is_err());
     }
+
+    #[test]
+    fn rejects_invalid_signature_bytes() {
+        assert!(read_signature(bytes::Bytes::from_static(&[0xff])).is_err());
+    }
+
+    #[test]
+    fn rejects_missing_publication_date() {
+        assert!(require_pub_date(None).is_err());
+    }
 }
 
 fn parse_current_version(current_version: &str) -> Result<Version, Error> {
     Version::parse(current_version).map_err(|e| {
         error!("Failed to parse current version: {}", e);
         actix_web::error::ErrorBadRequest("Invalid current version format")
+    })
+}
+
+fn read_signature(sig_bytes: bytes::Bytes) -> Result<String, Error> {
+    String::from_utf8(sig_bytes.to_vec()).map_err(|e| {
+        error!("Failed to read signature: {}", e);
+        actix_web::error::ErrorInternalServerError("Invalid signature encoding")
+    })
+}
+
+fn require_pub_date(pub_date: Option<String>) -> Result<String, Error> {
+    pub_date.ok_or_else(|| {
+        error!("Latest release is missing published_at");
+        actix_web::error::ErrorInternalServerError("Release publication date missing")
     })
 }
 
@@ -128,8 +152,7 @@ pub async fn check_update(
                 )
                 .await?;
 
-            String::from_utf8(sig_bytes.to_vec())
-                .unwrap_or_else(|_| "Failed to read signature".to_string())
+            read_signature(sig_bytes)?
         } else {
             return Err(actix_web::error::ErrorInternalServerError(
                 "No signature file found",
@@ -144,7 +167,7 @@ pub async fn check_update(
 
         let update_response = UpdateResponse {
             version: latest_version.to_string(),
-            pub_date: release.published_at.unwrap().to_rfc3339(),
+            pub_date: require_pub_date(release.published_at.map(|date| date.to_rfc3339()))?,
             url,
             signature,
             notes: release.body.unwrap_or_default(),

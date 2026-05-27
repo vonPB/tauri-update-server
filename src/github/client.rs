@@ -47,6 +47,20 @@ impl GitHubClient {
         owner: &str,
         repo: &str,
     ) -> Result<Bytes, Error> {
+        let response = self.download_asset_response(asset_id, owner, repo).await?;
+
+        response.bytes().await.map_err(|e| {
+            error!("Failed to read response from GitHub: {}", e);
+            actix_web::error::ErrorInternalServerError("Failed to read asset")
+        })
+    }
+
+    pub async fn download_asset_response(
+        &self,
+        asset_id: u64,
+        owner: &str,
+        repo: &str,
+    ) -> Result<reqwest::Response, Error> {
         let client = reqwest::Client::new();
         let url = format!(
             "https://api.github.com/repos/{}/{}/releases/assets/{}",
@@ -78,9 +92,6 @@ impl GitHubClient {
             ));
         }
 
-        response.bytes().await.map_err(|e| {
-            error!("Failed to read response from GitHub: {}", e);
-            actix_web::error::ErrorInternalServerError("Failed to read asset")
-        })
+        Ok(response)
     }
 }
