@@ -1,4 +1,5 @@
 mod config;
+mod download_token;
 mod github;
 mod handlers;
 mod platform;

@@ -38,9 +38,12 @@ ANOTHERAPP_REPO=another-repo
 ADDRESS=0.0.0.0
 PORT=8080
 HOSTNAME=https://updates.example.com
+DOWNLOAD_TOKEN_SECRET=replace-with-a-long-random-secret
 ```
 
 The `_TOKEN` variable (e.g., `MYAPP_TOKEN`) must be a [GitHub Personal Access Token (PAT)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens) with `read-only` permission for the **Contents** of your private repository to access its release assets.
+
+`DOWNLOAD_TOKEN_SECRET` signs short-lived download URLs. Use the same strong random value on every instance of the server.
 
 On startup a map of the product configs is read from the .env. Add as many products as you wish.
 
@@ -95,4 +98,3 @@ In your `tauri.conf.json`, set the updater endpoints to your server:
 Replace the following in the URL:
 - `updates.example.com` → your server’s `HOSTNAME`
 - `myapp` → the product name (from your `.env` file)
-

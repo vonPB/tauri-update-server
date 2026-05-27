@@ -4,8 +4,11 @@ use semver::Version;
 use serde::Serialize;
 
 use crate::config::AppState;
+use crate::download_token::create_download_token;
 use crate::github::client::GitHubClient;
 use crate::platform::matcher::{Platform, PlatformMatcher};
+
+const DOWNLOAD_TOKEN_TTL_MINUTES: u64 = 30;
 
 #[derive(Serialize)]
 pub struct UpdateResponse {
@@ -58,7 +61,7 @@ pub async fn check_update(
     };
 
     // Create GitHub client
-    let github = GitHubClient::new(product_config.github_token)?;
+    let github = GitHubClient::new(product_config.github_token.clone())?;
 
     // Fetch latest release
     let release = github
@@ -93,9 +96,21 @@ pub async fn check_update(
             .map(|a| a.id.0)
             .ok_or_else(|| actix_web::error::ErrorInternalServerError("Asset not found"))?;
 
+        let download_token = create_download_token(
+            &data.download_token_secret,
+            &product_name,
+            asset_id,
+            &asset_match.filename,
+            DOWNLOAD_TOKEN_TTL_MINUTES,
+        )
+        .map_err(|e| {
+            error!("Failed to create download token: {}", e);
+            actix_web::error::ErrorInternalServerError("Failed to create download token")
+        })?;
+
         let url = format!(
             "{}/{}/download/{}/{}",
-            hostname, product_name, asset_id, asset_match.filename
+            hostname, product_name, download_token, asset_match.filename
         );
 
         let signature = if let Some(sig_filename) = asset_match.signature_filename.clone() {

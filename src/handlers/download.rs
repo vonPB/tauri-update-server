@@ -2,14 +2,15 @@ use actix_web::{get, web, Error, HttpResponse};
 use log::error;
 
 use crate::config::AppState;
+use crate::download_token::verify_download_token;
 use crate::github::client::GitHubClient;
 
-#[get("/{product_name}/download/{asset_id}/{filename}")]
+#[get("/{product_name}/download/{download_token}/{filename}")]
 pub async fn download_asset(
-    path: web::Path<(String, u64, String)>,
+    path: web::Path<(String, String, String)>,
     data: web::Data<AppState>,
 ) -> Result<HttpResponse, Error> {
-    let (product_name, asset_id, filename) = path.into_inner();
+    let (product_name, download_token, filename) = path.into_inner();
 
     let products = data.products.read().await;
     let product_config = match products.get(&product_name.to_lowercase()) {
@@ -20,11 +21,22 @@ pub async fn download_asset(
         }
     };
 
+    let claims = verify_download_token(
+        &data.download_token_secret,
+        &download_token,
+        &product_name,
+        &filename,
+    )
+    .map_err(|e| {
+        error!("Invalid download token: {}", e);
+        actix_web::error::ErrorUnauthorized("Invalid download token")
+    })?;
+
     let github = GitHubClient::new(product_config.github_token)?;
 
     match github
         .download_asset(
-            asset_id,
+            claims.asset_id,
             &product_config.repo_owner,
             &product_config.repo_name,
         )

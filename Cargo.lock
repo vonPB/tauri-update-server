@@ -2123,6 +2123,7 @@ dependencies = [
  "bytes",
  "dotenvy",
  "env_logger",
+ "jsonwebtoken",
  "lazy_static",
  "log",
  "octocrab",

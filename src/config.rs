@@ -12,12 +12,21 @@ pub struct ProductConfig {
 #[derive(Clone)]
 pub struct AppState {
     pub products: Arc<RwLock<HashMap<String, ProductConfig>>>,
+    pub download_token_secret: String,
 }
 
 impl AppState {
     pub async fn load_config() -> Self {
-        let mut products = HashMap::new();
         let env_vars: HashMap<String, String> = env::vars().collect();
+        Self::load_config_from_env(env_vars)
+    }
+
+    fn load_config_from_env(env_vars: HashMap<String, String>) -> Self {
+        let mut products = HashMap::new();
+        let download_token_secret = env_vars
+            .get("DOWNLOAD_TOKEN_SECRET")
+            .expect("DOWNLOAD_TOKEN_SECRET must be set")
+            .clone();
 
         for (key, value) in env_vars.iter() {
             if key.ends_with("_TOKEN") {
@@ -42,6 +51,25 @@ impl AppState {
 
         AppState {
             products: Arc::new(RwLock::new(products)),
+            download_token_secret,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_download_token_secret_from_env() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("MYAPP_TOKEN".to_string(), "github-token".to_string());
+        env_vars.insert("MYAPP_OWNER".to_string(), "owner".to_string());
+        env_vars.insert("MYAPP_REPO".to_string(), "repo".to_string());
+        env_vars.insert("DOWNLOAD_TOKEN_SECRET".to_string(), "download-secret".to_string());
+
+        let state = AppState::load_config_from_env(env_vars);
+
+        assert_eq!(state.download_token_secret, "download-secret");
     }
 }
