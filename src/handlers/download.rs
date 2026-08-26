@@ -84,12 +84,22 @@ pub async fn download_asset(
         )
         .await
     {
-        Ok(response) => Ok(HttpResponse::Ok()
-            .append_header((header::CONTENT_DISPOSITION, content_disposition(&filename)))
-            .streaming(response.bytes_stream().map_err(|e| {
+        Ok(response) => {
+            let content_length = response.content_length();
+            let stream = response.bytes_stream().map_err(|e| {
                 error!("Failed to stream asset from GitHub: {}", e);
                 actix_web::error::ErrorInternalServerError("Failed to stream asset")
-            }))),
+            });
+
+            let mut builder = HttpResponse::Ok();
+            builder.append_header((header::CONTENT_DISPOSITION, content_disposition(&filename)));
+
+            if let Some(content_length) = content_length {
+                builder.insert_header((header::CONTENT_LENGTH, content_length.to_string()));
+            }
+
+            Ok(builder.streaming(stream))
+        }
         Err(e) => {
             error!("Failed to download asset: {}", e);
             Err(actix_web::error::ErrorInternalServerError(
